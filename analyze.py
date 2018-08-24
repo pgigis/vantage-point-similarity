@@ -5,9 +5,16 @@ import gzip
 import bz2
 import ujson
 
-def dump_json(filename):
-    with open(filename + '.json', 'w') as outfile:
-        json.dump(data, outfile)
+
+class SetEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, set):
+            return list(obj)
+        return json.JSONEncoder.default(self, obj)
+
+def dump_json(filename, data):
+    with open("results/" + filename + '.json', 'w') as outfile:
+        json.dump(data, outfile, cls=SetEncoder)
 
 def load_probe_ids_to_asns(filename):
     with open(filename + '.json', 'r') as f:
@@ -22,11 +29,10 @@ def load_caida_pfx2as(date):
         pfx2as_filename = "routeviews-" + version[1] + "-" + date + "-1200.pfx2as"
         pfx2as_file_path = "pfx2as/" + version[0] + "/" + pfx2as_filename
         
-        with gzip.open(pfx2as_file_path + ".gz", 'rt') as f:
-            file_content = f.readlines()
+        with gzip.open(pfx2as_file_path + ".gz", 'rt') as file_content:
             
             for line in file_content:
-                line_ = line.split()
+                line_ = line.strip().split()
                 prefix = line_[0] + "/" + line_[1]
                 rnode = radix_tree.add(prefix)
 
@@ -36,8 +42,8 @@ def load_caida_pfx2as(date):
                 else:
                     rnode.data["moas"] = False
                     rnode.data["asn"] = line_[2]
-    
-    if('rv4' in filename):
+    #Special cases
+    if('rv2' in pfx2as_filename): # v4 case
         ## add RFC1918 et al for the heck of it
         r10 = radix_tree.add('10.0.0.0/8')
         r10.data['asn'] = '*' #rfc1918a
@@ -51,173 +57,128 @@ def load_caida_pfx2as(date):
         rcgn = radix_tree.add('100.64.0.0/10')
         rcgn.data['asn'] = '*' #rfc6598
         rcgn.data["moas"] = False
-    elif('rv6' in filename):
+
+    elif('rv6' in pfx2as_filename): # v6 case
         ll = radix_tree.add('fe80::/64')
         ll.data['asn'] = '*' #v6_linklocal
         ll.data["moas"] = False
     
     return radix_tree
 
-def find_border_ip_set(decoded, list_of_ip_asn_tuples, radix_tree, src_asn):
+def find_border_ip_set(prb_id, list_of_ip_asn_tuples, probe_asn, probe_ip):
     ip_src_as = None
     ip_next_as = None
-    skip_it = 0
-
-    if(len(list_of_ip_asn_tuples) > 0):
-        if(list_of_ip_asn_tuples[0][1] != src_asn): #Case where the first ip on the path belongs to different AS than the probe (maybe tunnel?)
-            return (None, None)
+    check = False
     
-    for i,hop in enumerate(list_of_ip_asn_tuples):
+    for i, hop in enumerate(list_of_ip_asn_tuples):
         ip_, as_, moas_ = hop[0], hop[1], hop[2]
 
-        if moas_ == False:
-            if(src_asn == as_):
-                continue
+        if '*' in as_:
+            check = True
+        elif probe_asn in as_:
+            check = False
+
+        if((probe_asn not in as_) and ('*' not in as_ )):
+            if check == True:
+                return (None, None)
             else:
-                if(as_ != '*'):
-                    if(i >= 1):
-                        prev_hop = list_of_ip_asn_tuples[ i - 1 ]
-                        prev_ip_, prev_as_, prev_moas_ = prev_hop[0], prev_hop[1], prev_hop[2]
-
-                        if(prev_as_ == '*'):
-                            skip_it = 1
-                            break
-                        elif(prev_moas_ == False and src_asn == prev_as_):
-                            ip_src_as = prev_ip_
-                            ip_next_as = ip_
-                            break   
-                        elif(prev_moas_ == True and src_asn in prev_as_):
-                            ip_src_as = prev_ip_
-                            ip_next_as = ip_
-                            break
-                        else:
-                            print(prev_as_,as_)
-                            print(list_of_ip_asn_tuples)
-                            print(str(decoded['prb_id']), prev_as_, as_)
-                            print("error1!--")
-                            exit()
+                if(i >= 1):
+                    probe_as_last_ip = list_of_ip_asn_tuples[i-1][0]
                 else:
-                    continue
-        else:
-            if(src_asn in as_):
-                continue
-            else:
-                if(as_ != '*'):
-                    if(i >= 1):
-                        prev_hop = list_of_ip_asn_tuples[ i - 1 ]
-                        prev_ip_, prev_as_, prev_moas_ = prev_hop[0], prev_hop[1], prev_hop[2]
+                    probe_as_last_ip = probe_ip
 
-                        if(prev_as_ == '*'):
-                            skip_it = 1
-                            break
-                        elif(prev_moas_ == False and prev_as_ in src_asn ):
-                            ip_src_as = prev_ip_
-                            ip_next_as = ip_
-                            break   
-                        elif(prev_moas_ == True and len(set(src_asn).intersection(prev_as_)) > 0):
-                            ip_src_as = prev_ip_
-                            ip_next_as = ip_
-                            break
-                        else:
-                            print(prev_as_,as_)
-                            print(list_of_ip_asn_tuples)
-                            print(str(decoded['prb_id']), prev_as_, as_)
-                            print("error2!--")
-                            exit()
-                else:
-                    continue
-
-    if(skip_it == 1):
-        return None
-    else:
-        return (ip_src_as, ip_next_as)
+                return (probe_as_last_ip, ip_)
 
 def parse_traceroutes(filename, radix_tree, probeIds):
     #Example entry in probeIds {asn_v4: 3434, asn_v6: 3443}
     
-    v4_ = {}
+    v4_ = {} # v4 { "src_AS" : { "probeID" : { "tuples" : "last_origin_ip - nex_ip - target_ip " }, "last_probe_as_ips": set(), "next_probe_as_ips" : set(), "num_trac" : 0  }}
     v6_ = {}
 
     with bz2.open(filename + ".bz2", 'rt') as subset:
-
+        print("Loaded " + filename)
         #Load traceroute file
         for traceroute in subset:
-            decoded = json.loads(traceroute)
-
-            if('prb_id' not in decoded or "src_addr" not in decoded or int(decoded['af']) not in [4,6]):
-                continue
-
-            if int(decoded['af']) == 4 and str(decoded['prb_id']) in probeIds:
-                src_asn = str(probeIds[str(decoded['prb_id'])]['asn_v4'])
-            if int(decoded['af']) == 6 and str(decoded['prb_id']) in probeIds:
-                src_asn = str(probeIds[str(decoded['prb_id'])]['asn_v6'])
-            else:
-                print("error " + str(decoded['prb_id']) + " not found in probeIds." )
-                continue
-
-            list_of_ip_asn_tuples = list()
-
-            for hop in decoded["result"]:
-                if "error" in hop:
-                    list_of_ip_asn_tuples.append( ("*", "*", False) )
-                    continue
-
-                if "error" in hop["result"][0] or "x" in hop["result"][0]:
-                    list_of_ip_asn_tuples.append( ("*", "*", False) )
-                    continue
-
-                ip = hop["result"][0]['from']
+            decoded = ujson.loads(traceroute)
+            
+            if('prb_id' in decoded and "src_addr" in decoded and int(decoded['af']) in [4,6]):
                 
-                if (ip == "*"):
-                    list_of_ip_asn_tuples.append( ("*", "*", False) )
-                    continue            
+                if int(decoded['af']) == 4 and str(decoded['prb_id']) in probeIds:
+                    probe_asn = str(probeIds[str(decoded['prb_id'])]['asn_v4'])
+                elif int(decoded['af']) == 6 and str(decoded['prb_id']) in probeIds:
+                    probe_asn = str(probeIds[str(decoded['prb_id'])]['asn_v6'])
                 else:
-                    match = radix_tree.search_best(ip)
-                    
-                    if match is None:
-                        list_of_ip_asn_tuples.append( (ip, "*", False) )
+                    print("error " + str(decoded['prb_id']) + " not found in probeIds." )
+                    continue
+
+                # Translate IP-level path to AS-level path
+                list_of_ip_asn_tuples = list()
+
+                for hop in decoded["result"]:
+                    if "error" in hop:
+                        list_of_ip_asn_tuples.append( ("*", "*") )
+                        
+                    elif "error" in hop["result"][0] or "x" in hop["result"][0]:
+                        list_of_ip_asn_tuples.append( ("*", "*") )
+                        
                     else:
-                        if match.data['moas'] == False:
-                            list_of_ip_asn_tuples.append( (ip, str(match.data['asn']), False))
-                            if(str(match.data['asn']) != src_asn): # No need to analyze the full path
-                                break
-
+                        ip = hop["result"][0]['from']
+                    
+                        if (ip == "*"):
+                            list_of_ip_asn_tuples.append( ("*", "*") )            
                         else:
-                            list_of_ip_asn_tuples.append( (ip, match.data['asn'], True))
+                            match = radix_tree.search_best(ip)
+                            
+                            if match is None:
+                                list_of_ip_asn_tuples.append( (ip, "*") )
+                            else:
+                                if match.data['moas'] == False:
+                                    list_of_ip_asn_tuples.append( (ip, [str(match.data['asn'])]))
+                                    if(str(match.data['asn']) != src_asn): # No need to analyze the full path
+                                        break
+                                else:
+                                    list_of_ip_asn_tuples.append( (ip, match.data['asn']))
 
-            if(int(decoded['af']) == 4): #v4 case
-                res_v4 = find_border_ip_set(decoded, list_of_ip_asn_tuples, radix_tree, src_asn)
+                if(int(decoded['af']) == 4): #v4 case
+                    res_v4 = find_border_ip_set(str(decoded['prb_id']), list_of_ip_asn_tuples, probe_asn, str(decoded['src_addr']))
 
-                if(res_v4 != None):
                     if src_asn not in v4_:
                         v4_[src_asn] = dict()
+                    
                     if str(decoded['prb_id']) not in v4_[src_asn]:
                         v4_[src_asn][str(decoded['prb_id'])] = dict()
                         v4_[src_asn][str(decoded['prb_id'])]['tuples'] = set()
-                        v4_[src_asn][str(decoded['prb_id'])]['src_ips'] = set()
-                        v4_[src_asn][str(decoded['prb_id'])]['next_ips'] = set()
-                    else:
-                        v4_[src_asn][str(decoded['prb_id'])]['tuples'].add( (res_v4[0], res_v4[1], str(decoded['dst_addr']) ))
-                        v4_[src_asn][str(decoded['prb_id'])]['src_ips'].add(res_v4[0])
-                        v4_[src_asn][str(decoded['prb_id'])]['next_ips'].add(res_v4[1])
+                        v4_[src_asn][str(decoded['prb_id'])]['last_probe_as_ips'] = set()
+                        v4_[src_asn][str(decoded['prb_id'])]['next_probe_as_ips'] = set()
+                        v4_[src_asn][str(decoded['prb_id'])]['num_trac'] = 0
+                    
+                    if(res_v4 != (None, None)):
+                        v4_[src_asn][str(decoded['prb_id'])]['tuples'].add( str(res_v4[0] + "-" + res_v4[1] + "-" +  str(decoded['dst_addr'])) )
+                        v4_[src_asn][str(decoded['prb_id'])]['last_probe_as_ips'].add(res_v4[0])
+                        v4_[src_asn][str(decoded['prb_id'])]['next_as_ips'].add(res_v4[1])
 
-            else: #v6 case
-                res_v6 = parse_v6_traceroute(decoded, list_of_ip_asn_tuples, radix_tree, src_asn)
+                    v4_[src_asn][str(decoded['prb_id'])]['num_trac'] += 1
 
-                if(res_v6 != None):
+
+                else: #v6 case
+                    res_v6 = find_border_ip_set(str(decoded['prb_id']), list_of_ip_asn_tuples, probe_asn, str(decoded['src_addr']))
+
                     if src_asn not in v6_:
                         v6_[src_asn] = dict()
 
                     if str(decoded['prb_id']) not in v6_[src_asn]:
                         v6_[src_asn][str(decoded['prb_id'])] = dict()
                         v6_[src_asn][str(decoded['prb_id'])]['tuples'] = set()
-                        v6_[src_asn][str(decoded['prb_id'])]['src_ips'] = set()
-                        v6_[src_asn][str(decoded['prb_id'])]['next_ips'] = set()
-                    else:
-                        v6_[src_asn][str(decoded['prb_id'])]['tuples'].add( (res_v6[0], res_v6[1], str(decoded['dst_addr']) ))
-                        v6_[src_asn][str(decoded['prb_id'])]['src_ips'].add(res_v6[0])
-                        v6_[src_asn][str(decoded['prb_id'])]['next_ips'].add(res_v6[1])
+                        v6_[src_asn][str(decoded['prb_id'])]['last_probe_as_ips'] = set()
+                        v6_[src_asn][str(decoded['prb_id'])]['next_probe_as_ips'] = set()
+                        v6_[src_asn][str(decoded['prb_id'])]['num_trac'] = 0
 
+                    if(res_v6 != (None, None)):
+                        v6_[src_asn][str(decoded['prb_id'])]['tuples'].add( str(res_v6[0] + "-" + res_v6[1] + "-" +  str(decoded['dst_addr'])) )
+                        v6_[src_asn][str(decoded['prb_id'])]['last_probeAS_ips'].add(res_v6[0])
+                        v6_[src_asn][str(decoded['prb_id'])]['next_probe_as_ips'].add(res_v6[1])
+
+                    v6_[src_asn][str(decoded['prb_id'])]['num_trac'] += 1
 
     return v4_, v6_
 
@@ -234,6 +195,7 @@ def main():
     probeIds_asns = load_probe_ids_to_asns(probeIds_asns_filepath)
 
     radix_tree = load_caida_pfx2as(date)
+    print("Loaded radix_tree")
 
     traceroute_dumps = "traceroute_dumps/"
     traceroute_filename = "traceroute-" + year + "-" + month + "-" + day + "T" + time
