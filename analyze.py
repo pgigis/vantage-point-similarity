@@ -14,22 +14,28 @@ def load_probe_ids_to_asns(filename):
         probeId_to_ASN = json.load(f)
     return probeId_to_ASN
 
-def load_caida_pfx2as(filename):
+def load_caida_pfx2as(date):
     radix_tree = radix.Radix()
-    with gzip.open(filename + ".gz", 'rt') as f:
-        file_content = f.readlines()
-        
-        for line in file_content:
-            line_ = line.split()
-            prefix = line_[0] + "/" + line_[1]
-            rnode = radix_tree.add(prefix)
 
-            if('_' in line_[2]):
-                rnode.data["moas"] = True
-                rnode.data["asn"] = line_[2].split('_')
-            else:
-                rnode.data["moas"] = False
-                rnode.data["asn"] = line_[2]
+    for version in [('v4', 'rv2'), ('v6', 'rv6')]:
+
+        pfx2as_filename = "routeviews-" + version[1] + "-" + date + "-1200.pfx2as"
+        pfx2as_file_path = "pfx2as/" + version[0] + "/" + pfx2as_filename
+        
+        with gzip.open(pfx2as_file_path + ".gz", 'rt') as f:
+            file_content = f.readlines()
+            
+            for line in file_content:
+                line_ = line.split()
+                prefix = line_[0] + "/" + line_[1]
+                rnode = radix_tree.add(prefix)
+
+                if('_' in line_[2]):
+                    rnode.data["moas"] = True
+                    rnode.data["asn"] = line_[2].split('_')
+                else:
+                    rnode.data["moas"] = False
+                    rnode.data["asn"] = line_[2]
     
     if('rv4' in filename):
         ## add RFC1918 et al for the heck of it
@@ -59,7 +65,7 @@ def find_border_ip_set(decoded, list_of_ip_asn_tuples, radix_tree, src_asn):
 
     if(len(list_of_ip_asn_tuples) > 0):
         if(list_of_ip_asn_tuples[0][1] != src_asn): #Case where the first ip on the path belongs to different AS than the probe (maybe tunnel?)
-            continue
+            return (None, None)
     
     for i,hop in enumerate(list_of_ip_asn_tuples):
         ip_, as_, moas_ = hop[0], hop[1], hop[2]
@@ -139,7 +145,15 @@ def parse_traceroutes(filename, radix_tree, probeIds):
             decoded = json.loads(traceroute)
 
             if('prb_id' not in decoded or "src_addr" not in decoded or int(decoded['af']) not in [4,6]):
-                continue 
+                continue
+
+            if int(decoded['af']) == 4 and str(decoded['prb_id']) in probeIds:
+                src_asn = str(probeIds[str(decoded['prb_id'])]['asn_v4'])
+            if int(decoded['af']) == 6 and str(decoded['prb_id']) in probeIds:
+                src_asn = str(probeIds[str(decoded['prb_id'])]['asn_v6'])
+            else:
+                print("error " + str(decoded['prb_id']) + " not found in probeIds." )
+                continue
 
             list_of_ip_asn_tuples = list()
 
@@ -165,21 +179,16 @@ def parse_traceroutes(filename, radix_tree, probeIds):
                     else:
                         if match.data['moas'] == False:
                             list_of_ip_asn_tuples.append( (ip, str(match.data['asn']), False))
+                            if(str(match.data['asn']) != src_asn): # No need to analyze the full path
+                                break
+
                         else:
                             list_of_ip_asn_tuples.append( (ip, match.data['asn'], True))
 
-            
-            
             if(int(decoded['af']) == 4): #v4 case
-                if str(decoded['prb_id']) in probeIds:
-                    src_asn = str(probeIds[str(decoded['prb_id'])]['asn_v4'])
-                else:
-                    print("error " + str(decoded['prb_id']) + " not found in probeIds." )
-                    continue
-
                 res_v4 = find_border_ip_set(decoded, list_of_ip_asn_tuples, radix_tree, src_asn)
 
-                if(res_v4 != None)
+                if(res_v4 != None):
                     if src_asn not in v4_:
                         v4_[src_asn] = dict()
                     if str(decoded['prb_id']) not in v4_[src_asn]:
@@ -193,15 +202,9 @@ def parse_traceroutes(filename, radix_tree, probeIds):
                         v4_[src_asn][str(decoded['prb_id'])]['next_ips'].add(res_v4[1])
 
             else: #v6 case
-                if str(decoded['prb_id']) in probeIds:
-                    src_asn = str(probeIds[str(decoded['prb_id'])]['asn_v4'])
-                else:
-                    print("error " + str(decoded['prb_id']) + " not found in probeIds." )
-                    continue
-
                 res_v6 = parse_v6_traceroute(decoded, list_of_ip_asn_tuples, radix_tree, src_asn)
 
-                if(res_v6 != None)
+                if(res_v6 != None):
                     if src_asn not in v6_:
                         v6_[src_asn] = dict()
 
@@ -230,9 +233,7 @@ def main():
     probeIds_asns_filepath = "probeId_to_AS/" + date
     probeIds_asns = load_probe_ids_to_asns(probeIds_asns_filepath)
 
-    pfx2as_filename = "routeviews-rv2-" + date + "-1200.pfx2as"
-    pfx2as_file_path = "pfx2as/" + pfx2as_filename
-    radix_tree = load_caida_pfx2as(pfx2as_file_path)
+    radix_tree = load_caida_pfx2as(date)
 
     traceroute_dumps = "traceroute_dumps/"
     traceroute_filename = "traceroute-" + year + "-" + month + "-" + day + "T" + time
