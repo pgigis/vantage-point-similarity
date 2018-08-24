@@ -52,6 +52,80 @@ def load_caida_pfx2as(filename):
     
     return radix_tree
 
+def find_border_ip_set(decoded, list_of_ip_asn_tuples, radix_tree, src_asn):
+    ip_src_as = None
+    ip_next_as = None
+    skip_it = 0
+
+    if(len(list_of_ip_asn_tuples) > 0):
+        if(list_of_ip_asn_tuples[0][1] != src_asn): #Case where the first ip on the path belongs to different AS than the probe (maybe tunnel?)
+            continue
+    
+    for i,hop in enumerate(list_of_ip_asn_tuples):
+        ip_, as_, moas_ = hop[0], hop[1], hop[2]
+
+        if moas_ == False:
+            if(src_asn == as_):
+                continue
+            else:
+                if(as_ != '*'):
+                    if(i >= 1):
+                        prev_hop = list_of_ip_asn_tuples[ i - 1 ]
+                        prev_ip_, prev_as_, prev_moas_ = prev_hop[0], prev_hop[1], prev_hop[2]
+
+                        if(prev_as_ == '*'):
+                            skip_it = 1
+                            break
+                        elif(prev_moas_ == False and src_asn == prev_as_):
+                            ip_src_as = prev_ip_
+                            ip_next_as = ip_
+                            break   
+                        elif(prev_moas_ == True and src_asn in prev_as_):
+                            ip_src_as = prev_ip_
+                            ip_next_as = ip_
+                            break
+                        else:
+                            print(prev_as_,as_)
+                            print(list_of_ip_asn_tuples)
+                            print(str(decoded['prb_id']), prev_as_, as_)
+                            print("error1!--")
+                            exit()
+                else:
+                    continue
+        else:
+            if(src_asn in as_):
+                continue
+            else:
+                if(as_ != '*'):
+                    if(i >= 1):
+                        prev_hop = list_of_ip_asn_tuples[ i - 1 ]
+                        prev_ip_, prev_as_, prev_moas_ = prev_hop[0], prev_hop[1], prev_hop[2]
+
+                        if(prev_as_ == '*'):
+                            skip_it = 1
+                            break
+                        elif(prev_moas_ == False and prev_as_ in src_asn ):
+                            ip_src_as = prev_ip_
+                            ip_next_as = ip_
+                            break   
+                        elif(prev_moas_ == True and len(set(src_asn).intersection(prev_as_)) > 0):
+                            ip_src_as = prev_ip_
+                            ip_next_as = ip_
+                            break
+                        else:
+                            print(prev_as_,as_)
+                            print(list_of_ip_asn_tuples)
+                            print(str(decoded['prb_id']), prev_as_, as_)
+                            print("error2!--")
+                            exit()
+                else:
+                    continue
+
+    if(skip_it == 1):
+        return None
+    else:
+        return (ip_src_as, ip_next_as)
+
 def parse_traceroutes(filename, radix_tree, probeIds):
     #Example entry in probeIds {asn_v4: 3434, asn_v6: 3443}
     
@@ -92,59 +166,55 @@ def parse_traceroutes(filename, radix_tree, probeIds):
                         if match.data['moas'] == False:
                             list_of_ip_asn_tuples.append( (ip, str(match.data['asn']), False))
                         else:
-                            list_of_ip_asn_tuples.append( (ip, match.data['asn'], True)) 
+                            list_of_ip_asn_tuples.append( (ip, match.data['asn'], True))
+
+            
             
             if(int(decoded['af']) == 4): #v4 case
-                ip_src_as = None
-                ip_next_as = None
-
                 if str(decoded['prb_id']) in probeIds:
                     src_asn = str(probeIds[str(decoded['prb_id'])]['asn_v4'])
                 else:
                     print("error " + str(decoded['prb_id']) + " not found in probeIds." )
                     continue
 
-                skip_it = 0
+                res_v4 = find_border_ip_set(decoded, list_of_ip_asn_tuples, radix_tree, src_asn)
 
-                for i,hop in enumerate(list_of_ip_asn_tuples):
-                    ip_, as_, moas_ = hop[0], hop[1], hop[2] 
-                    if(src_asn == as_):
-                        continue
+                if(res_v4 != None)
+                    if src_asn not in v4_:
+                        v4_[src_asn] = dict()
+                    if str(decoded['prb_id']) not in v4_[src_asn]:
+                        v4_[src_asn][str(decoded['prb_id'])] = dict()
+                        v4_[src_asn][str(decoded['prb_id'])]['tuples'] = set()
+                        v4_[src_asn][str(decoded['prb_id'])]['src_ips'] = set()
+                        v4_[src_asn][str(decoded['prb_id'])]['next_ips'] = set()
                     else:
-                        if(as_ != '*'):
-                            if(i >= 1):
-                                prev_hop = list_of_ip_asn_tuples[ i - 1 ]
-                                prev_ip_, prev_as_, prev_moas_ = prev_hop[0], prev_hop[1], prev_hop[2]
-
-                                if(prev_as_ == '*'):
-                                    skip_it = 1
-                                    break
-                                elif(prev_as_ == src_asn):
-                                    ip_src_as = prev_ip_
-                                    ip_next_as = ip_
-                                    break
-                                else:
-                                    print(list_of_ip_asn_tuples)
-                                    print(str(decoded['prb_id']))
-                                    print("error!--")
-                        else:
-                            continue
-
-                if(skip_it == 1):
-                    continue
-                else:
-                    if str(decoded['prb_id']) not in v4_:
-                        v4_[str(decoded['prb_id'])] = dict()
-                        v4_[str(decoded['prb_id'])]['tuples'] = set()
-                        v4_[str(decoded['prb_id'])]['src_ips'] = set()
-                        v4_[str(decoded['prb_id'])]['next_ips'] = set()
-                    else:
-                        v4_[str(decoded['prb_id'])]['tuples'].add( (ip_src_as, ip_next_as, str(decoded['dst_addr'])  ))
-                        v4_[str(decoded['prb_id'])]['src_ips'].add(ip_src_as)
-                        v4_[str(decoded['prb_id'])]['next_ips'].add(ip_next_as)
+                        v4_[src_asn][str(decoded['prb_id'])]['tuples'].add( (res_v4[0], res_v4[1], str(decoded['dst_addr']) ))
+                        v4_[src_asn][str(decoded['prb_id'])]['src_ips'].add(res_v4[0])
+                        v4_[src_asn][str(decoded['prb_id'])]['next_ips'].add(res_v4[1])
 
             else: #v6 case
-                pass
+                if str(decoded['prb_id']) in probeIds:
+                    src_asn = str(probeIds[str(decoded['prb_id'])]['asn_v4'])
+                else:
+                    print("error " + str(decoded['prb_id']) + " not found in probeIds." )
+                    continue
+
+                res_v6 = parse_v6_traceroute(decoded, list_of_ip_asn_tuples, radix_tree, src_asn)
+
+                if(res_v6 != None)
+                    if src_asn not in v6_:
+                        v6_[src_asn] = dict()
+
+                    if str(decoded['prb_id']) not in v6_[src_asn]:
+                        v6_[src_asn][str(decoded['prb_id'])] = dict()
+                        v6_[src_asn][str(decoded['prb_id'])]['tuples'] = set()
+                        v6_[src_asn][str(decoded['prb_id'])]['src_ips'] = set()
+                        v6_[src_asn][str(decoded['prb_id'])]['next_ips'] = set()
+                    else:
+                        v6_[src_asn][str(decoded['prb_id'])]['tuples'].add( (res_v6[0], res_v6[1], str(decoded['dst_addr']) ))
+                        v6_[src_asn][str(decoded['prb_id'])]['src_ips'].add(res_v6[0])
+                        v6_[src_asn][str(decoded['prb_id'])]['next_ips'].add(res_v6[1])
+
 
     return v4_, v6_
 
