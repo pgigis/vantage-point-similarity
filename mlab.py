@@ -1,16 +1,17 @@
 import maxminddb
-import shutils
+import shutil
+import radix
 import os
 import numpy as np
 
 class Hop():
     def __init(self, hop):
-        self.idx =
-        self.dst_ip =
-        self.CC =
-        self.AS =
-        self.lat =
-        self.long =
+        self.idx = None
+        self.dst_ip = None
+        self.CC = None
+        self.AS = None
+        self.lat = None
+        self.long = None
         self.probes = []
 
 class MeasurementProfile():
@@ -59,15 +60,14 @@ def load_caida_pfx2as(date):
         ll = radix_tree.add('fe80::/64')
         ll.data['asn'] = '*' #v6_linklocal
         ll.data["moas"] = False
-    
+
     return radix_tree
 
-def find_border_ip_set(prb_id, list_of_ip_asn_tuples, probe_asn, probe_ip):
 def get_cc(ip):
     return reader.get(ip)
 
 def make_profile(measurement):
-    #
+    print 'helo'
 
 def main():
     reader = maxminddb.open_database('countriZ/GeoLite2-Country.mmdb')
