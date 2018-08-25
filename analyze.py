@@ -100,7 +100,9 @@ def parse_traceroutes(filename, radix_tree, probeIds):
         #Load traceroute file
         for traceroute in subset:
             decoded = ujson.loads(traceroute)
-            
+            print(decoded)
+            exit()
+
             if('prb_id' in decoded and "src_addr" in decoded and int(decoded['af']) in [4,6]):
                 
                 if int(decoded['af']) == 4 and str(decoded['prb_id']) in probeIds:
@@ -194,7 +196,7 @@ def main():
     probeIds_asns_filepath = "probeId_to_AS/" + date
     probeIds_asns = load_probe_ids_to_asns(probeIds_asns_filepath)
 
-    radix_tree = load_caida_pfx2as(date)
+    radix_tree = None # load_caida_pfx2as(date)
     print("Loaded radix_tree")
 
     traceroute_dumps = "traceroute_dumps/"
